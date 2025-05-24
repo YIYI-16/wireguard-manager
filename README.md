@@ -1,7 +1,7 @@
 # WireGuard VPN 管理脚本
 
-![GitHub License](https://img.shields.io/github/license/YIYI-16/wireguard_manager)
-![GitHub top language](https://img.shields.io/github/languages/top/YIYI-16/wireguard_manager)
+![GitHub License](https://img.shields.io/github/license/YIYI-16/wireguard-manager)
+![GitHub top language](https://img.shields.io/github/languages/top/YIYI-16/wireguard-manager)
 
 
 本项目是一个基于 Bash 的 WireGuard VPN 服务器管理脚本，提供便捷的安装配置和客户端管理功能。
@@ -31,8 +31,8 @@ curl -fsSL https://raw.githubusercontent.com/YIYI-16/wireguard-manager/main/depl
 ### 源码安装
 ```bash
 # 克隆仓库
-git clone https://github.com/YIYI-16/wireguard_manager.git
-cd wireguard_manager
+git clone https://github.com/YIYI-16/wireguard-manager.git
+cd wireguard-manager
 
 # 授予执行权限
 chmod +x deploy.sh
