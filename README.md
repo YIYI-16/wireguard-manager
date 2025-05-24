@@ -37,7 +37,7 @@ cd wireguard-manager
 # 授予执行权限
 chmod +x deploy.sh
 
-# 启动管理脚本
+# 启动部署脚本
 sudo ./deploy.sh
 ```
 
