@@ -3,10 +3,10 @@
 # 配置变量
 SERVER_CONFIG="/etc/wireguard/wg0.conf"
 CLIENT_DIR="/etc/wireguard/clients"
-DDNS_DOMAIN="10tikf6039938.vicp.fun"
+CONFIG_FILE="/etc/wireguard/wg_manager_config"
 SERVER_IP="10.0.0.1"
 CLIENT_IP_START="10.0.0.2"
-VPN_PORT="51820"
+DEFAULT_VPN_PORT="51820"
 SERVER_INTERFACE=$(ip route | grep default | awk '{print $5}' | head -1)
 
 # 颜色定义，让输出更美观
@@ -14,6 +14,7 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
+CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
 # 检查是否为root用户 - WireGuard配置需要管理员权限
@@ -38,9 +39,222 @@ print_error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
 
+print_info() {
+    echo -e "${CYAN}[提示]${NC} $1"
+}
+
+# 保存配置到文件
+save_config() {
+    cat > "$CONFIG_FILE" << EOF
+VPN_PORT=$VPN_PORT
+DDNS_DOMAIN=$DDNS_DOMAIN
+ENDPOINT_TYPE=$ENDPOINT_TYPE
+PUBLIC_IP=$PUBLIC_IP
+EOF
+}
+
+# 加载配置文件
+load_config() {
+    if [ -f "$CONFIG_FILE" ]; then
+        source "$CONFIG_FILE"
+        return 0
+    else
+        return 1
+    fi
+}
+
+# 获取公网IP地址
+get_public_ip() {
+    local public_ip=""
+    
+    # 尝试多个服务获取公网IP
+    for service in "curl -s ifconfig.me" "curl -s ipinfo.io/ip" "curl -s icanhazip.com" "curl -s ident.me"; do
+        public_ip=$(eval $service 2>/dev/null)
+        if [[ $public_ip =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+            echo "$public_ip"
+            return 0
+        fi
+    done
+    
+    return 1
+}
+
+# 验证IP地址格式
+validate_ip() {
+    local ip=$1
+    if [[ $ip =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+        local IFS='.'
+        local parts=($ip)
+        for part in "${parts[@]}"; do
+            if (( part > 255 )); then
+                return 1
+            fi
+        done
+        return 0
+    fi
+    return 1
+}
+
+# 验证域名格式
+validate_domain() {
+    local domain=$1
+    if [[ $domain =~ ^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)*$ ]]; then
+        return 0
+    fi
+    return 1
+}
+
+# 验证端口号
+validate_port() {
+    local port=$1
+    if [[ $port =~ ^[0-9]+$ ]] && [ $port -ge 1 ] && [ $port -le 65535 ]; then
+        return 0
+    fi
+    return 1
+}
+
+# 配置端口和域名
+configure_connection() {
+    echo -e "${BLUE}╔════════════════════════════════════════╗${NC}"
+    echo -e "${BLUE}║           连接配置设置                 ║${NC}"
+    echo -e "${BLUE}╚════════════════════════════════════════╝${NC}"
+    echo ""
+    
+    # 配置端口
+    while true; do
+        echo -e "${CYAN}请设置WireGuard监听端口:${NC}"
+        read -p "输入端口号 (直接回车使用默认 $DEFAULT_VPN_PORT): " input_port
+        
+        if [ -z "$input_port" ]; then
+            VPN_PORT=$DEFAULT_VPN_PORT
+            break
+        elif validate_port "$input_port"; then
+            VPN_PORT=$input_port
+            break
+        else
+            print_error "无效的端口号，请输入1-65535之间的数字"
+        fi
+    done
+    
+    print_status "已设置端口: $VPN_PORT"
+    echo ""
+    
+    # 配置连接方式
+    while true; do
+        echo -e "${CYAN}请选择客户端连接方式:${NC}"
+        echo "  1) 使用公网IP地址"
+        echo "  2) 使用局域网IP地址 (需要客户端在同一网络)"
+        echo "  3) 使用自定义域名/DDNS"
+        echo ""
+        read -p "请选择 (1-3): " endpoint_choice
+        
+        case $endpoint_choice in
+            1)
+                print_status "正在获取公网IP地址..."
+                PUBLIC_IP=$(get_public_ip)
+                if [ $? -eq 0 ] && [ -n "$PUBLIC_IP" ]; then
+                    DDNS_DOMAIN=$PUBLIC_IP
+                    ENDPOINT_TYPE="public_ip"
+                    print_status "检测到公网IP: $PUBLIC_IP"
+                    break
+                else
+                    print_error "无法获取公网IP地址，请检查网络连接或选择其他方式"
+                fi
+                ;;
+            2)
+                # 获取本机局域网IP
+                local_ip=$(ip route get 8.8.8.8 | grep -oP 'src \K\S+' 2>/dev/null)
+                if [ -z "$local_ip" ]; then
+                    local_ip=$(hostname -I | awk '{print $1}')
+                fi
+                
+                if [ -n "$local_ip" ]; then
+                    print_info "检测到本机IP: $local_ip"
+                    echo "您可以直接使用检测到的IP，或手动输入其他局域网IP"
+                    read -p "输入局域网IP地址 (直接回车使用 $local_ip): " input_ip
+                    
+                    if [ -z "$input_ip" ]; then
+                        DDNS_DOMAIN=$local_ip
+                    else
+                        if validate_ip "$input_ip"; then
+                            DDNS_DOMAIN=$input_ip
+                        else
+                            print_error "无效的IP地址格式"
+                            continue
+                        fi
+                    fi
+                else
+                    read -p "请输入局域网IP地址: " input_ip
+                    if validate_ip "$input_ip"; then
+                        DDNS_DOMAIN=$input_ip
+                    else
+                        print_error "无效的IP地址格式"
+                        continue
+                    fi
+                fi
+                
+                ENDPOINT_TYPE="local_ip"
+                PUBLIC_IP=$DDNS_DOMAIN
+                print_status "已设置局域网IP: $DDNS_DOMAIN"
+                print_warning "注意: 使用局域网IP时，客户端必须在同一网络内才能连接"
+                break
+                ;;
+            3)
+                read -p "请输入自定义域名或DDNS地址: " input_domain
+                if [ -n "$input_domain" ] && validate_domain "$input_domain"; then
+                    DDNS_DOMAIN=$input_domain
+                    ENDPOINT_TYPE="custom_domain"
+                    # 尝试解析域名获取IP
+                    resolved_ip=$(nslookup "$input_domain" 2>/dev/null | grep -A1 "Name:" | tail -n1 | awk '{print $2}')
+                    if validate_ip "$resolved_ip"; then
+                        PUBLIC_IP=$resolved_ip
+                        print_status "域名解析成功: $input_domain -> $resolved_ip"
+                    else
+                        print_warning "无法解析域名，请确保域名配置正确"
+                        PUBLIC_IP=""
+                    fi
+                    break
+                else
+                    print_error "无效的域名格式"
+                fi
+                ;;
+            *)
+                print_error "无效选项，请选择1-3"
+                ;;
+        esac
+    done
+    
+    echo ""
+    print_status "连接配置完成:"
+    print_status "  端口: $VPN_PORT"
+    print_status "  连接地址: $DDNS_DOMAIN"
+    print_status "  连接类型: $ENDPOINT_TYPE"
+    echo ""
+    
+    # 保存配置
+    save_config
+    
+    read -p "按回车键继续安装..."
+}
+
 # 安装WireGuard - 检测系统版本并使用合适的包管理器
 install_wireguard() {
     print_status "开始安装 WireGuard..."
+    
+    # 检查是否已经配置过
+    if ! load_config; then
+        configure_connection
+    else
+        print_status "使用已保存的配置:"
+        print_status "  端口: $VPN_PORT"
+        print_status "  连接地址: $DDNS_DOMAIN"
+        print_status "  连接类型: $ENDPOINT_TYPE"
+        echo ""
+        read -p "是否重新配置连接设置? (y/n): " reconfig
+        if [[ $reconfig =~ ^[Yy]$ ]]; then
+            configure_connection
+        fi
+    fi
     
     # 更新软件包列表
     apt update
@@ -79,6 +293,27 @@ install_wireguard() {
     
     print_status "WireGuard 服务器安装并配置完成！"
     print_status "服务器公钥: $SERVER_PUBLIC_KEY"
+    
+    # 显示连接信息摘要
+    echo ""
+    echo -e "${GREEN}╔════════════════════════════════════════╗${NC}"
+    echo -e "${GREEN}║           安装完成摘要                 ║${NC}"
+    echo -e "${GREEN}╚════════════════════════════════════════╝${NC}"
+    echo -e "端口: ${CYAN}$VPN_PORT${NC}"
+    echo -e "连接地址: ${CYAN}$DDNS_DOMAIN${NC}"
+    case $ENDPOINT_TYPE in
+        "public_ip")
+            echo -e "连接类型: ${CYAN}公网IP${NC}"
+            ;;
+        "local_ip")
+            echo -e "连接类型: ${CYAN}局域网IP${NC}"
+            echo -e "${YELLOW}注意: 客户端需在同一网络内${NC}"
+            ;;
+        "custom_domain")
+            echo -e "连接类型: ${CYAN}自定义域名${NC}"
+            ;;
+    esac
+    echo ""
 }
 
 # 创建服务器配置文件
@@ -107,7 +342,7 @@ setup_firewall() {
     # 使用ufw防火墙（Ubuntu/Debian默认）
     if command -v ufw >/dev/null 2>&1; then
         ufw allow $VPN_PORT/udp
-        print_status "UFW防火墙规则已添加"
+        print_status "UFW防火墙规则已添加 (端口 $VPN_PORT/udp)"
     fi
     
     # 使用iptables直接配置（通用方法）
@@ -147,6 +382,12 @@ get_next_client_ip() {
 
 # 创建新的客户端配置
 create_client() {
+    # 加载配置
+    if ! load_config; then
+        print_error "请先安装 WireGuard 服务器"
+        return
+    fi
+    
     print_status "创建新的WireGuard客户端..."
     
     # 获取客户端名称
@@ -182,8 +423,8 @@ create_client() {
 PrivateKey = $CLIENT_PRIVATE_KEY
 # 客户端在VPN网络中的IP地址
 Address = $CLIENT_IP/24
-# DNS服务器 - 使用Cloudflare的公共DNS
-DNS = 119.29.29.29, 8.8.8.8，223.5.5.5
+# DNS服务器 - 使用公共DNS
+DNS = 119.29.29.29, 8.8.8.8, 223.5.5.5
 
 [Peer]
 # 服务器公钥
@@ -191,7 +432,7 @@ PublicKey = $SERVER_PUBLIC_KEY
 # 服务器地址和端口
 Endpoint = $DDNS_DOMAIN:$VPN_PORT
 # 允许的IP范围 - 仅局域网流经VPN
-AllowedIPs = 192.168.3.0/24, 10.0.0.0/24
+AllowedIPs = 192.168.0.0/16, 10.0.0.0/24, 172.16.0.0/12
 # 保持连接活跃
 PersistentKeepalive = 25
 EOF
@@ -211,6 +452,15 @@ EOF
     print_status "客户端 '$CLIENT_NAME' 创建成功！"
     print_status "配置文件位置: $CLIENT_DIR/$CLIENT_NAME.conf"
     print_status "客户端IP: $CLIENT_IP"
+    
+    # 显示连接信息
+    echo ""
+    print_info "连接信息:"
+    print_info "  服务器地址: $DDNS_DOMAIN"
+    print_info "  端口: $VPN_PORT"
+    if [ "$ENDPOINT_TYPE" = "local_ip" ]; then
+        print_warning "  注意: 使用局域网IP，客户端需在同一网络内"
+    fi
     
     # 询问是否生成二维码
     read -p "是否生成二维码用于手机客户端? (y/n): " generate_qr
@@ -357,6 +607,25 @@ show_status() {
     print_status "WireGuard 服务器状态:"
     echo ""
     
+    # 加载配置
+    if load_config; then
+        echo "配置信息:"
+        echo "  端口: $VPN_PORT"
+        echo "  连接地址: $DDNS_DOMAIN"
+        case $ENDPOINT_TYPE in
+            "public_ip")
+                echo "  连接类型: 公网IP"
+                ;;
+            "local_ip")
+                echo "  连接类型: 局域网IP"
+                ;;
+            "custom_domain")
+                echo "  连接类型: 自定义域名"
+                ;;
+        esac
+        echo ""
+    fi
+    
     # 检查服务状态
     if systemctl is-active --quiet wg-quick@wg0; then
         echo -e "服务状态: ${GREEN}运行中${NC}"
@@ -375,8 +644,6 @@ show_status() {
     
     echo ""
     echo "服务器配置:"
-    echo "  DDNS域名: $DDNS_DOMAIN"
-    echo "  VPN端口: $VPN_PORT"
     echo "  服务器IP: $SERVER_IP"
     
     # 显示连接的客户端
@@ -421,6 +688,7 @@ reset_wireguard() {
     # 删除配置文件
     rm -f "$SERVER_CONFIG"
     rm -rf "$CLIENT_DIR"
+    rm -f "$CONFIG_FILE"
     
     # 删除网络接口
     ip link delete wg0 2>/dev/null || true
@@ -440,6 +708,9 @@ uninstall_wireguard() {
     
     print_status "开始卸载 WireGuard..."
     
+    # 加载配置以获取端口信息
+    load_config
+    
     # 停止并禁用服务
     systemctl stop wg-quick@wg0 2>/dev/null || true
     systemctl disable wg-quick@wg0 2>/dev/null || true
@@ -455,9 +726,71 @@ uninstall_wireguard() {
     apt autoremove -y
     
     # 清理防火墙规则
-    ufw delete allow $VPN_PORT/udp 2>/dev/null || true
+    if [ -n "$VPN_PORT" ]; then
+        ufw delete allow $VPN_PORT/udp 2>/dev/null || true
+    fi
     
     print_status "WireGuard 已完全卸载"
+}
+
+# 修改连接配置
+modify_connection() {
+    if ! load_config; then
+        print_error "请先安装 WireGuard 服务器"
+        return
+    fi
+    
+    print_status "当前连接配置:"
+    print_status "  端口: $VPN_PORT"
+    print_status "  连接地址: $DDNS_DOMAIN"
+    print_status "  连接类型: $ENDPOINT_TYPE"
+    echo ""
+    
+    print_warning "修改连接配置将影响所有现有客户端连接"
+    read -p "确定要修改吗? (y/n): " confirm
+    if [[ ! $confirm =~ ^[Yy]$ ]]; then
+        print_status "取消修改操作"
+        return
+    fi
+    
+    # 备份当前配置
+    OLD_VPN_PORT=$VPN_PORT
+    OLD_DDNS_DOMAIN=$DDNS_DOMAIN
+    
+    # 重新配置
+    configure_connection
+    
+    # 更新服务器配置文件中的端口
+    if [ "$OLD_VPN_PORT" != "$VPN_PORT" ]; then
+        sed -i "s/^ListenPort = $OLD_VPN_PORT/ListenPort = $VPN_PORT/" "$SERVER_CONFIG"
+        
+        # 更新防火墙规则
+        if command -v ufw >/dev/null 2>&1; then
+            ufw delete allow $OLD_VPN_PORT/udp 2>/dev/null || true
+            ufw allow $VPN_PORT/udp
+        fi
+        
+        print_status "已更新服务器端口配置"
+    fi
+    
+    # 更新所有客户端配置文件
+    if [ "$OLD_DDNS_DOMAIN" != "$DDNS_DOMAIN" ] || [ "$OLD_VPN_PORT" != "$VPN_PORT" ]; then
+        print_status "正在更新客户端配置文件..."
+        
+        for config_file in "$CLIENT_DIR"/*.conf; do
+            if [ -f "$config_file" ]; then
+                local client_name=$(basename "$config_file" .conf)
+                sed -i "s/^Endpoint = .*/Endpoint = $DDNS_DOMAIN:$VPN_PORT/" "$config_file"
+                print_status "已更新客户端: $client_name"
+            fi
+        done
+    fi
+    
+    # 重启服务
+    systemctl restart wg-quick@wg0
+    
+    print_status "连接配置修改完成！"
+    print_warning "请重新分发客户端配置文件或重新生成二维码"
 }
 
 # 显示主菜单
@@ -478,8 +811,9 @@ show_menu() {
     echo "  5) 生成二维码"
     echo "  6) 查看状态"
     echo "  7) 重启服务"
-    echo "  8) 重置配置"
-    echo "  9) 卸载 WireGuard"
+    echo "  8) 修改连接配置"
+    echo "  9) 重置配置"
+    echo " 10) 卸载 WireGuard"
     echo "  0) 退出"
     echo ""
 }
@@ -512,7 +846,7 @@ main() {
     
     while true; do
         show_menu
-        read -p "请输入选项 (0-9): " choice
+        read -p "请输入选项 (0-10): " choice
         
         case $choice in
             1)
@@ -552,10 +886,14 @@ main() {
                 read -p "按回车键继续..."
                 ;;
             8)
-                reset_wireguard
+                modify_connection
                 read -p "按回车键继续..."
                 ;;
             9)
+                reset_wireguard
+                read -p "按回车键继续..."
+                ;;
+            10)
                 uninstall_wireguard
                 read -p "按回车键继续..."
                 ;;
@@ -564,7 +902,7 @@ main() {
                 exit 0
                 ;;
             *)
-                print_error "无效选项，请选择 0-9"
+                print_error "无效选项，请选择 0-10"
                 read -p "按回车键继续..."
                 ;;
         esac
