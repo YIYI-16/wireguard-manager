@@ -36,3 +36,5 @@ ehthumbs.db
 # WireGuard生成的临时文件
 *.tmpkey
 *.tmpconf
+verify_fix.md
+test_fix.sh

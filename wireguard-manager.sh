@@ -242,9 +242,7 @@ install_wireguard() {
     print_status "开始安装 WireGuard..."
     
     # 检查是否已经配置过
-    if ! load_config; then
-        configure_connection
-    else
+    if load_config; then
         print_status "使用已保存的配置:"
         print_status "  端口: $VPN_PORT"
         print_status "  连接地址: $DDNS_DOMAIN"
@@ -254,6 +252,8 @@ install_wireguard() {
         if [[ $reconfig =~ ^[Yy]$ ]]; then
             configure_connection
         fi
+    else
+        configure_connection
     fi
     
     # 更新软件包列表
@@ -708,8 +708,13 @@ uninstall_wireguard() {
     
     print_status "开始卸载 WireGuard..."
     
-    # 加载配置以获取端口信息
-    load_config
+    # 尝试加载配置以获取端口信息（如果存在）
+    if load_config; then
+        print_status "使用已保存的配置信息"
+    else
+        print_warning "未找到配置文件，使用默认端口 $DEFAULT_VPN_PORT"
+        VPN_PORT=$DEFAULT_VPN_PORT
+    fi
     
     # 停止并禁用服务
     systemctl stop wg-quick@wg0 2>/dev/null || true
