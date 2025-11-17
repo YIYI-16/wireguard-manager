@@ -382,9 +382,15 @@ get_next_client_ip() {
 
 # 创建新的客户端配置
 create_client() {
+    # 检查服务器配置是否存在
+    if [ ! -f "$SERVER_CONFIG" ]; then
+        print_error "请先安装 WireGuard 服务器"
+        return
+    fi
+    
     # 加载配置
     if ! load_config; then
-        print_error "请先安装 WireGuard 服务器"
+        print_error "配置加载失败，请重新配置连接设置"
         return
     fi
     
@@ -740,8 +746,15 @@ uninstall_wireguard() {
 
 # 修改连接配置
 modify_connection() {
-    if ! load_config; then
+    # 检查服务器配置是否存在
+    if [ ! -f "$SERVER_CONFIG" ]; then
         print_error "请先安装 WireGuard 服务器"
+        return
+    fi
+    
+    # 加载配置
+    if ! load_config; then
+        print_error "配置加载失败，请重新配置连接设置"
         return
     fi
     
